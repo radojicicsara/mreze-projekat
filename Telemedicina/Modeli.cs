@@ -33,9 +33,12 @@
         [Serializable]
         public class Zahtev
         {
-            public string IDPacijenta { get; set; } // LBO
-            public string IDJedinice { get; set; }
-            public Status StatusZahteva { get; set; }
+            public string IDPacijenta { get; set; } = string.Empty;
+            public string IDJedinice { get; set; } = string.Empty;
+            public Status StatusZahteva { get; set; } = "Aktivan";
+
+            public DateTime VremeZavrsetka { get; set; }
+
         }
     }
 
