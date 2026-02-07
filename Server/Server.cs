@@ -1,118 +1,150 @@
-﻿using System.Net;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
+using System.Threading;
 using static Telemedicina.Modeli;
 
 #pragma warning disable SYSLIB0011
 
-namespace Server
+namespace TCPServer
 {
     internal class Server
     {
-        static void Main(string[] args)
+        static List<Pacijent> pacijenti = new();
+        static List<Jedinica> jedinice = new();
+        static List<Zahtev> zavrseniZahtevi = new();
+        static Dictionary<string, Socket> socketiJedinica = new();
+        static BinaryFormatter formatter = new();
+
+        static void Main()
         {
-            Console.WriteLine("Hello, World!");
-            Console.ReadKey();
+            Console.Title = "TCP Server";
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine("=================================");
+            Console.WriteLine("   TELEMEDICINA - TCP SERVER");
+            Console.WriteLine("=================================");
+            Console.ResetColor();
 
-          
-                #region
+            Socket server = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            server.Bind(new IPEndPoint(IPAddress.Any, 50001));
+            server.Listen(10);
 
-                Socket serverSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-                IPEndPoint serverEP = new IPEndPoint(IPAddress.Any, 18010);
+            Console.WriteLine("Server pokrenut...\n");
 
-                serverSocket.Bind(serverEP);
-                serverSocket.Blocking = false; // Postavljanje servera u neblokirajući režim
-                serverSocket.Listen(126);
+            while (true)
+            {
+                Socket klijent = server.Accept();
+                new Thread(() => ObradiKlijenta(klijent)).Start();
+            }
+        }
 
-                Console.WriteLine($"Telemedicina Server pokrenut na adresi: {serverEP}");
+        static void ObradiKlijenta(Socket socket)
+        {
+            byte[] buffer = new byte[4096];
 
-                // Liste za praćenje, slično tvom acceptedSockets, ali razdvojeno radi projekta
-                List<Socket> klijentskiSoketi = new List<Socket>();
-                List<Jedinica> listaJedinica = new List<Jedinica>();
-                List<Pacijent> listaPacijenata = new List<Pacijent>();
+            int br = socket.Receive(buffer);
+            using MemoryStream ms = new MemoryStream(buffer, 0, br);
+            object obj = formatter.Deserialize(ms);
 
-                #endregion
+            // JEDINICA
+            if (obj is Jedinica j)
+            {
+                jedinice.Add(j);
+                socketiJedinica[j.IDJedinice] = socket;
 
-                #region Komunikacija (Polling model)
-
-                byte[] buffer = new byte[4096];
+                Console.ForegroundColor = ConsoleColor.Magenta;
+                Console.WriteLine($"[JEDINICA] {j.IDJedinice} ({j.Tip}) registrovana");
+                Console.ResetColor();
 
                 while (true)
                 {
-                    // 1. Prihvatanje novih klijenta (Pacijent aplikacija ili Jedinica aplikacija)
-                    if (serverSocket.Poll(2000 * 1000, SelectMode.SelectRead))
+                    try
                     {
-                        Socket noviKlijent = serverSocket.Accept();
-                        noviKlijent.Blocking = false; // Svaka nova utičnica mora biti neblokirajuća
-                        klijentskiSoketi.Add(noviKlijent);
-                        Console.WriteLine($"Novi učesnik povezan sa adrese: {noviKlijent.RemoteEndPoint}");
-                    }
+                        int br2 = socket.Receive(buffer);
+                        if (br2 == 0) break;
 
-                    // 2. Prolazak kroz sve povezane klijente (Polling za poruke)
-                    for (int i = 0; i < klijentskiSoketi.Count; i++)
+                        using MemoryStream ms2 = new MemoryStream(buffer, 0, br2);
+                        Zahtev z = (Zahtev)formatter.Deserialize(ms2);
+
+                        z.StatusZahteva = Status.Zavrsen;
+                        zavrseniZahtevi.Add(z);
+
+                        Pacijent p = pacijenti.Find(x => x.LBO == z.IDPacijenta);
+                        if (p != null) p.StatusPacijenta = Status.Zavrsen;
+
+                        j.StatusJedinice = false;
+
+                        PrikaziIzvestaj();
+                    }
+                    catch
                     {
-                        // Sačekati do narednog pokušaja prijema poruke 1 s 
-                        if (klijentskiSoketi[i].Poll(1000 * 1000, SelectMode.SelectRead))
-                        {
-                            try
-                            {
-                                int brBajta = klijentskiSoketi[i].Receive(buffer);
-
-                                if (brBajta > 0)
-                                {
-                                    object primljeno;
-                                    using (MemoryStream ms = new MemoryStream(buffer, 0, brBajta))
-                                    {
-                                        BinaryFormatter bf = new BinaryFormatter();
-                                        primljeno = bf.Deserialize(ms);
-                                    }
-
-                                    // Provjera šta je klijent poslao 
-                                    if (primljeno is Pacijent p)
-                                    {
-                                        Console.WriteLine($"STIGAO ZAHTEV: Pacijent {p.Ime} {p.Prezime}, LBO: {p.LBO}");
-                                        Console.WriteLine($"Tip usluge: {p.VrstaZahteva}");
-
-                                        listaPacijenata.Add(p);
-
-                                        // Slanje potvrde pacijentu 
-                                        string odgovor = "Vase podaci su primljeni. Sacekajte dodelu jedinice.";
-                                        klijentskiSoketi[i].Send(Encoding.UTF8.GetBytes(odgovor));
-                                    }
-                                    else if (primljeno is Jedinica j)
-                                    {
-                                        // Ako se jedinica prvi put povezuje, dodajemo je u evidenciju
-                                        Console.WriteLine($"REGISTROVANA JEDINICA: {j.IDJedinice} (Tip: {j.Tip})");
-                                        Console.WriteLine($"Status: {(j.StatusJedinice ? "Zauzeta" : "Slobodna")}");
-
-                                        listaJedinica.Add(j);
-                                    }
-                                }
-                                else if (brBajta == 0) // Klijent se zatvorio
-                                {
-                                    klijentskiSoketi[i].Close();
-                                    klijentskiSoketi.RemoveAt(i);
-                                    i--;
-                                }
-                            }
-                            catch (SocketException)
-                            {
-                                Console.WriteLine("Doslo je do prekida veze sa jednim klijentom.");
-                                klijentskiSoketi[i].Close();
-                                klijentskiSoketi.RemoveAt(i);
-                                i--;
-                            }
-                        }
+                        break;
                     }
-
-                    // Ovde bi kasnije išla vizuelizacija (Zadatak 6)
-                    // Console.Clear(); // Pa ispis tabela...
                 }
 
-                #endregion
+                socket.Close();
+                return;
+            }
+
+            // PACIJENT
+            if (obj is Pacijent p2)
+            {
+                pacijenti.Add(p2);
+
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"[PACIJENT] {p2.Ime} {p2.Prezime} ({p2.VrstaZahteva})");
+                Console.ResetColor();
+
+                Jedinica slobodna = jedinice.Find(x => x.Tip == p2.VrstaZahteva && !x.StatusJedinice);
+
+                if (slobodna == null)
+                {
+                    socket.Send(Encoding.UTF8.GetBytes("Nema slobodne jedinice."));
+                    socket.Close();
+                    return;
+                }
+
+                Zahtev z = new Zahtev
+                {
+                    IDPacijenta = p2.LBO,
+                    IDJedinice = slobodna.IDJedinice,
+                    TipUsluge = p2.VrstaZahteva,
+                    StatusZahteva = Status.U_Obradi
+                };
+
+                slobodna.StatusJedinice = true;
+                socketiJedinica[slobodna.IDJedinice].Send(Serialize(z));
+
+                socket.Send(Encoding.UTF8.GetBytes("Zahtev uspešno prosleđen."));
+                socket.Close();
             }
         }
+
+        static byte[] Serialize(object o)
+        {
+            using MemoryStream ms = new();
+            formatter.Serialize(ms, o);
+            return ms.ToArray();
+        }
+
+        static void PrikaziIzvestaj()
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("\n===== IZVEŠTAJ ZAVRŠENIH USLUGA =====");
+            foreach (var z in zavrseniZahtevi)
+            {
+                Console.WriteLine(
+                    $"Pacijent: {z.IDPacijenta} | " +
+                    $"Usluga: {z.TipUsluge} | " +
+                    $"Vreme: {z.VremeZavrsetka:T}"
+                );
+            }
+            Console.WriteLine("===================================\n");
+            Console.ResetColor();
+        }
     }
-
-
+}
