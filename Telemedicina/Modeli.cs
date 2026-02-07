@@ -5,10 +5,20 @@ namespace Telemedicina
     public class Modeli
     {
         [Serializable]
-        public enum TipUsluge { Urgentna, Dijagnosticka, Terapeutska }
+        public enum TipUsluge
+        {
+            Urgentna,
+            Dijagnosticka,
+            Terapeutska
+        }
 
         [Serializable]
-        public enum Status { Aktivan, U_Obradi, Zavrsen }
+        public enum Status
+        {
+            Ceka,
+            UObradi,
+            Zavrsen
+        }
 
         [Serializable]
         public class Pacijent
@@ -16,8 +26,8 @@ namespace Telemedicina
             public string LBO { get; set; } = "";
             public string Ime { get; set; } = "";
             public string Prezime { get; set; } = "";
-            public TipUsluge VrstaZahteva { get; set; }
-            public Status StatusPacijenta { get; set; } = Status.Aktivan;
+            public TipUsluge TipUsluge { get; set; }
+            public Status StatusPacijenta { get; set; } = Status.Ceka;
         }
 
         [Serializable]
@@ -25,7 +35,7 @@ namespace Telemedicina
         {
             public string IDJedinice { get; set; } = "";
             public TipUsluge Tip { get; set; }
-            public bool StatusJedinice { get; set; }
+            public bool Zauzeta { get; set; }
         }
 
         [Serializable]
@@ -34,7 +44,7 @@ namespace Telemedicina
             public string IDPacijenta { get; set; } = "";
             public string IDJedinice { get; set; } = "";
             public TipUsluge TipUsluge { get; set; }
-            public Status StatusZahteva { get; set; }
+            public Status Status { get; set; } = Status.Ceka;
             public DateTime VremeZavrsetka { get; set; }
         }
     }

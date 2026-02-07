@@ -14,26 +14,40 @@ namespace TCPServer
 {
     internal class Server
     {
-        static List<Pacijent> pacijenti = new();
         static List<Jedinica> jedinice = new();
         static List<Zahtev> zavrseniZahtevi = new();
         static Dictionary<string, Socket> socketiJedinica = new();
-        static BinaryFormatter formatter = new();
+
+        // redovi cekanja
+        static List<Zahtev> urgentni = new();
+        static List<Zahtev> dijagnosticki = new();
+        static List<Zahtev> terapeutski = new();
+
+        static BinaryFormatter formatter = new BinaryFormatter();
 
         static void Main()
         {
-            Console.Title = "TCP Server";
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("=================================");
-            Console.WriteLine("   TELEMEDICINA - TCP SERVER");
-            Console.WriteLine("=================================");
-            Console.ResetColor();
+            Console.Title = "Telemedicina Server";
 
+            // Start server socket
             Socket server = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             server.Bind(new IPEndPoint(IPAddress.Any, 50001));
             server.Listen(10);
 
+            Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine("Server pokrenut...\n");
+            Console.ResetColor();
+
+            // Start pozadinska nit za stalnu raspodelu
+            new Thread(() =>
+            {
+                while (true)
+                {
+                    RaspodeliZahteve();
+                    Thread.Sleep(500);
+                }
+            })
+            { IsBackground = true }.Start();
 
             while (true)
             {
@@ -45,20 +59,23 @@ namespace TCPServer
         static void ObradiKlijenta(Socket socket)
         {
             byte[] buffer = new byte[4096];
-
             int br = socket.Receive(buffer);
             using MemoryStream ms = new MemoryStream(buffer, 0, br);
             object obj = formatter.Deserialize(ms);
 
-            // JEDINICA
+            // Jedinica
             if (obj is Jedinica j)
             {
                 jedinice.Add(j);
                 socketiJedinica[j.IDJedinice] = socket;
+                j.Zauzeta = false;
 
                 Console.ForegroundColor = ConsoleColor.Magenta;
                 Console.WriteLine($"[JEDINICA] {j.IDJedinice} ({j.Tip}) registrovana");
                 Console.ResetColor();
+
+                // ✅ ODMAH PROVERI REDOVE
+                RaspodeliZahteve();
 
                 while (true)
                 {
@@ -70,15 +87,20 @@ namespace TCPServer
                         using MemoryStream ms2 = new MemoryStream(buffer, 0, br2);
                         Zahtev z = (Zahtev)formatter.Deserialize(ms2);
 
-                        z.StatusZahteva = Status.Zavrsen;
+                        z.Status = Status.Zavrsen;
+                        z.VremeZavrsetka = DateTime.Now;
                         zavrseniZahtevi.Add(z);
 
-                        Pacijent p = pacijenti.Find(x => x.LBO == z.IDPacijenta);
-                        if (p != null) p.StatusPacijenta = Status.Zavrsen;
+                        Jedinica jedinica = jedinice.Find(x => x.IDJedinice == z.IDJedinice);
+                        if (jedinica != null)
+                            jedinica.Zauzeta = false;
 
-                        j.StatusJedinice = false;
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine($" ZAVRŠENO: Pacijent {z.IDPacijenta}, Jedinica {z.IDJedinice}");
+                        Console.ResetColor();
 
-                        PrikaziIzvestaj();
+                        // Ponovo probaj da raspodeli ostale zahteve
+                        RaspodeliZahteve();
                     }
                     catch
                     {
@@ -90,61 +112,72 @@ namespace TCPServer
                 return;
             }
 
-            // PACIJENT
-            if (obj is Pacijent p2)
+            // Pacijent
+            if (obj is Pacijent p)
             {
-                pacijenti.Add(p2);
-
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"[PACIJENT] {p2.Ime} {p2.Prezime} ({p2.VrstaZahteva})");
-                Console.ResetColor();
-
-                Jedinica slobodna = jedinice.Find(x => x.Tip == p2.VrstaZahteva && !x.StatusJedinice);
-
-                if (slobodna == null)
-                {
-                    socket.Send(Encoding.UTF8.GetBytes("Nema slobodne jedinice."));
-                    socket.Close();
-                    return;
-                }
-
                 Zahtev z = new Zahtev
                 {
-                    IDPacijenta = p2.LBO,
-                    IDJedinice = slobodna.IDJedinice,
-                    TipUsluge = p2.VrstaZahteva,
-                    StatusZahteva = Status.U_Obradi
+                    IDPacijenta = p.LBO,
+                    TipUsluge = p.TipUsluge,
+                    Status = Status.Ceka
                 };
 
-                slobodna.StatusJedinice = true;
-                socketiJedinica[slobodna.IDJedinice].Send(Serialize(z));
+                switch (p.TipUsluge)
+                {
+                    case TipUsluge.Urgentna: urgentni.Add(z); break;
+                    case TipUsluge.Dijagnosticka: dijagnosticki.Add(z); break;
+                    case TipUsluge.Terapeutska: terapeutski.Add(z); break;
+                }
 
-                socket.Send(Encoding.UTF8.GetBytes("Zahtev uspešno prosleđen."));
+                socket.Send(Encoding.UTF8.GetBytes("Zahtev primljen i stavljen u red."));
                 socket.Close();
+
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($" Pacijent {p.LBO} → {p.TipUsluge} (u red)");
+                Console.ResetColor();
             }
+        }
+
+        static void RaspodeliZahteve()
+        {
+            ObradiRed(urgentni);
+            ObradiRed(dijagnosticki);
+            ObradiRed(terapeutski);
+        }
+
+        static void ObradiRed(List<Zahtev> red)
+        {
+            foreach (var z in red.ToArray())
+            {
+                if (PokusajDodele(z))
+                    red.Remove(z);
+            }
+        }
+
+        static bool PokusajDodele(Zahtev z)
+        {
+            Jedinica slobodna = jedinice.Find(x => x.Tip == z.TipUsluge && !x.Zauzeta);
+            if (slobodna == null) return false;
+
+            z.IDJedinice = slobodna.IDJedinice;
+            z.Status = Status.UObradi;
+            slobodna.Zauzeta = true;
+
+            Socket sock = socketiJedinica[slobodna.IDJedinice];
+            sock.Send(Serialize(z));
+
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"DODELA: Pacijent {z.IDPacijenta} = Jedinica {slobodna.IDJedinice} ({slobodna.Tip})");
+            Console.ResetColor();
+
+            return true;
         }
 
         static byte[] Serialize(object o)
         {
-            using MemoryStream ms = new();
+            using MemoryStream ms = new MemoryStream();
             formatter.Serialize(ms, o);
             return ms.ToArray();
-        }
-
-        static void PrikaziIzvestaj()
-        {
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("\n===== IZVEŠTAJ ZAVRŠENIH USLUGA =====");
-            foreach (var z in zavrseniZahtevi)
-            {
-                Console.WriteLine(
-                    $"Pacijent: {z.IDPacijenta} | " +
-                    $"Usluga: {z.TipUsluge} | " +
-                    $"Vreme: {z.VremeZavrsetka:T}"
-                );
-            }
-            Console.WriteLine("===================================\n");
-            Console.ResetColor();
         }
     }
 }
