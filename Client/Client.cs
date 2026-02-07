@@ -60,13 +60,19 @@ namespace TCPClient
                     using MemoryStream ms = new MemoryStream(buffer, 0, br2);
                     Zahtev z = (Zahtev)formatter.Deserialize(ms);
 
+                    Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.WriteLine($"Primljen zahtev: Pacijent {z.IDPacijenta}, Tip {z.TipUsluge}");
+                    Console.ResetColor();
+
                     Thread.Sleep(2000); // simulacija obrade
+
                     z.Status = Status.Zavrsen;
                     z.VremeZavrsetka = DateTime.Now;
 
                     socket.Send(Serialize(formatter, z));
+                    Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine($"Završeno: Pacijent {z.IDPacijenta}");
+                    Console.ResetColor();
                 }
             }
         }
